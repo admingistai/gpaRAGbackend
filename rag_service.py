@@ -132,11 +132,11 @@ class RAGService:
         return list(discovered_urls)
         
     def index_website(self, base_url: str = None) -> Dict[str, Any]:
-        """Index the entire website into the vector store"""
+        """Index the entire website into the vector store, starting from homepage but excluding it"""
         if base_url is None:
             base_url = self.config.BASE_URL
             
-        logger.info(f"Starting to index website: {base_url}")
+        logger.info(f"Starting to index website from: {base_url} (homepage will be excluded)")
         
         # Clear existing collection to avoid duplicates
         try:
@@ -152,12 +152,49 @@ class RAGService:
         # Recreate the index
         self._setup_vector_store()
         
-        # Discover all URLs
+        # Discover all URLs starting from the homepage
         urls = self.discover_urls(base_url, self.config.MAX_DEPTH)
-        logger.info(f"Discovered {len(urls)} URLs to index")
+        logger.info(f"Discovered {len(urls)} URLs total")
         
-        if not urls:
-            return {"success": False, "message": "No URLs discovered", "indexed_count": 0}
+        # Remove the homepage and its variations from the list of URLs to index
+        def is_homepage_url(url, base_url):
+            """Check if a URL represents the homepage (root or index files)"""
+            from urllib.parse import urlparse, urljoin
+            
+            base_parsed = urlparse(base_url)
+            url_parsed = urlparse(url)
+            
+            # Must be same scheme and netloc
+            if base_parsed.scheme != url_parsed.scheme or base_parsed.netloc != url_parsed.netloc:
+                return False
+            
+            # Get the path part
+            path = url_parsed.path.lower().strip('/')
+            
+            # Check for various homepage representations
+            homepage_paths = [
+                '',  # root path
+                'index.html',
+                'index.htm', 
+                'index.php',
+                'home.html',
+                'home.htm',
+                'default.html',
+                'default.htm'
+            ]
+            
+            return path in homepage_paths
+        
+        urls_to_index = [url for url in urls if not is_homepage_url(url, base_url)]
+        excluded_urls = [url for url in urls if is_homepage_url(url, base_url)]
+        
+        logger.info(f"Excluding {len(excluded_urls)} homepage URLs from indexing:")
+        for excluded_url in excluded_urls:
+            logger.info(f"  - {excluded_url}")
+        logger.info(f"Will index {len(urls_to_index)} URLs (excluding homepage variations)")
+        
+        if not urls_to_index:
+            return {"success": False, "message": "No URLs to index after excluding homepage", "indexed_count": 0}
         
         # Load documents using SimpleWebPageReader
         reader = SimpleWebPageReader(html_to_text=True)
@@ -165,7 +202,7 @@ class RAGService:
         successfully_indexed = 0
         failed_urls = []
         
-        for url in urls:
+        for url in urls_to_index:
             try:
                 logger.info(f"Indexing: {url}")
                 documents = reader.load_data([url])
@@ -202,9 +239,9 @@ class RAGService:
         
         return {
             "success": True,
-            "message": f"Indexed {successfully_indexed} out of {len(urls)} URLs",
+            "message": f"Indexed {successfully_indexed} out of {len(urls_to_index)} URLs (homepage variations excluded)",
             "indexed_count": successfully_indexed,
-            "total_urls": len(urls),
+            "total_urls": len(urls_to_index),
             "failed_urls": failed_urls
         }
         
